@@ -37,7 +37,7 @@ const PAD = 40;
 interface WaterChart {
   path: string;
   area: string;
-  dots: { x: number; y: number; surge: boolean; label: string }[];
+  dots: { x: number; y: number; surge: boolean; confirmed: boolean; label: string }[];
   max: number;
   W: number;
   H: number;
@@ -62,6 +62,7 @@ const chart = computed<WaterChart>(() => {
     x: x(p.chainage),
     y: y(p.estimatedFlow),
     surge: isSurge(p, points),
+    confirmed: Boolean(gradeStore.reviewByWaterId(p.id)),
     label: `${formatChainage(p.chainage)} ${p.type} ${p.estimatedFlow} L/min`,
   }));
   return { path, area, dots, max, W, H, PAD };
@@ -73,6 +74,8 @@ function onChainageText(value: string): void {
 }
 
 const surges = computed(() => rows.value.filter((p) => isSurge(p, rows.value)));
+/** 突变点汇总按当前记录实时重算：已确认的从待复测中扣减，异常消失后不再占用待办 */
+const stats = computed(() => gradeStore.surgeStats(faceId.value));
 const totalFlow = computed(() => rows.value.reduce((s, p) => s + p.estimatedFlow, 0));
 
 async function submit() {
@@ -94,6 +97,41 @@ async function submit() {
   form.position = '';
 }
 
+/* ---------- 现场复测处置确认 ---------- */
+
+const reviewDialogVisible = ref(false);
+const reviewTarget = ref<WaterInflow | null>(null);
+const reviewNote = ref('');
+const reviewer = ref('');
+const reviewError = ref('');
+
+function openReview(row: WaterInflow): void {
+  reviewTarget.value = row;
+  const existing = gradeStore.reviewByWaterId(row.id);
+  reviewNote.value = existing?.note ?? '';
+  reviewer.value = existing?.reviewer ?? face.value?.geologist ?? '';
+  reviewError.value = '';
+  reviewDialogVisible.value = true;
+}
+
+async function submitReview() {
+  if (!reviewTarget.value) return;
+  reviewError.value = '';
+  if (!reviewNote.value.trim()) {
+    reviewError.value = '请填写现场复测处置说明，说明为空不能提交';
+    return;
+  }
+  await gradeStore.confirmReview({
+    faceId: faceId.value,
+    waterId: reviewTarget.value.id,
+    note: reviewNote.value,
+    reviewer: reviewer.value,
+  });
+  ElMessage.success('复测处置已确认，待复测数量已扣减');
+  reviewDialogVisible.value = false;
+  reviewTarget.value = null;
+}
+
 onMounted(async () => {
   await faceStore.load();
   await gradeStore.load();
@@ -109,7 +147,10 @@ onMounted(async () => {
     <div class="header">
       <h2>涌水记录与趋势 · {{ face?.faceNo ?? '未知' }}</h2>
       <el-tag type="info" effect="plain">记录 {{ rows.length }} 条</el-tag>
-      <el-tag type="warning">突变点 {{ surges.length }} 处</el-tag>
+      <el-tag type="warning">突变点 {{ stats.total }} 处</el-tag>
+      <el-tag :type="stats.pending > 0 ? 'danger' : 'success'">
+        待复测 {{ stats.pending }} 处 · 已确认 {{ stats.confirmed }} 处
+      </el-tag>
       <div class="spacer" />
       <el-button @click="router.push(`/faces/${faceId}`)">返回掌子面详情</el-button>
       <el-button @click="router.push(`/faces/${faceId}/joints`)">节理录入</el-button>
@@ -177,6 +218,8 @@ onMounted(async () => {
             <path :d="chart.path" fill="none" stroke="#1f4f8a" stroke-width="2.5" />
             <g v-for="(d, i) in chart.dots" :key="i">
               <circle :cx="d.x" :cy="d.y" :r="d.surge ? 6 : 4" :fill="d.surge ? '#d3542f' : '#1f4f8a'" />
+              <!-- 已复测确认的突变点加绿色对勾，红点与趋势保留 -->
+              <text v-if="d.surge && d.confirmed" :x="d.x" :y="d.y + 3.5" font-size="9" fill="#1f9d57" text-anchor="middle" font-weight="bold">✓</text>
               <text :x="d.x + 8" :y="d.y - 6" font-size="10" :fill="d.surge ? '#d3542f' : '#5b6470'">{{ d.label }}</text>
             </g>
             <text :x="chart.PAD" :y="16" font-size="11" fill="#7b8592">涌水量 L/min ↑</text>
@@ -188,16 +231,47 @@ onMounted(async () => {
         </el-card>
 
         <el-card shadow="never">
-          <template #header><strong>突变点与建议措施</strong></template>
+          <template #header>
+            <div class="card-head">
+              <strong>突变点与建议措施</strong>
+              <span class="muted">系统按规则自动识别；现场复测后由负责人确认，趋势与建议保留</span>
+            </div>
+          </template>
           <el-table :data="surges" size="small" border>
             <el-table-column label="里程" width="120">
               <template #default="{ row }">{{ formatChainage(row.chainage) }}</template>
             </el-table-column>
-            <el-table-column prop="position" label="部位" min-width="140" />
-            <el-table-column prop="type" label="类型" width="90" />
-            <el-table-column prop="estimatedFlow" label="涌水量" width="100" />
-            <el-table-column label="建议措施" min-width="260">
+            <el-table-column prop="position" label="部位" min-width="120" />
+            <el-table-column prop="type" label="类型" width="80" />
+            <el-table-column prop="estimatedFlow" label="涌水量" width="80" />
+            <el-table-column prop="changeTrend" label="趋势" width="70" />
+            <el-table-column label="建议措施" min-width="220">
               <template #default="{ row }">{{ waterMeasure(row.estimatedFlow, row.type) }}</template>
+            </el-table-column>
+            <el-table-column label="复测状态" width="100">
+              <template #default="{ row }">
+                <el-tag v-if="gradeStore.reviewByWaterId(row.id)" type="success" size="small">已复测确认</el-tag>
+                <el-tag v-else type="danger" size="small">待复测</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="复测处置说明 / 负责人" min-width="200">
+              <template #default="{ row }">
+                <template v-if="gradeStore.reviewByWaterId(row.id)">
+                  <div>{{ gradeStore.reviewByWaterId(row.id)?.note }}</div>
+                  <div class="muted">
+                    {{ gradeStore.reviewByWaterId(row.id)?.reviewer || '未填负责人' }} ·
+                    {{ new Date(gradeStore.reviewByWaterId(row.id)?.confirmedAt ?? 0).toLocaleString('zh-CN') }}
+                  </div>
+                </template>
+                <span v-else class="muted">现场复测后填写说明并确认</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="110" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" link @click="openReview(row)">
+                  {{ gradeStore.reviewByWaterId(row.id) ? '查看/更新' : '复测确认' }}
+                </el-button>
+              </template>
             </el-table-column>
           </el-table>
           <el-empty v-if="surges.length === 0" description="未检出突变点" :image-size="60" />
@@ -224,6 +298,34 @@ onMounted(async () => {
         </el-card>
       </div>
     </div>
+
+    <el-dialog v-model="reviewDialogVisible" :title="reviewTarget ? `现场复测处置确认 · ${formatChainage(reviewTarget.chainage)} ${reviewTarget.position}` : ''" width="560px">
+      <el-alert v-if="reviewError" :title="reviewError" type="error" :closable="false" style="margin-bottom: 10px" />
+      <el-alert
+        v-if="reviewTarget"
+        type="warning"
+        :closable="false"
+        style="margin-bottom: 12px"
+        :title="`系统识别：${reviewTarget.type} ${reviewTarget.estimatedFlow} L/min，趋势「${reviewTarget.changeTrend}」；建议措施：${waterMeasure(reviewTarget.estimatedFlow, reviewTarget.type)}`"
+      />
+      <el-form label-width="110px">
+        <el-form-item label="处置说明" required>
+          <el-input
+            v-model="reviewNote"
+            type="textarea"
+            :rows="3"
+            placeholder="填写现场复测结果与处置情况（必填，为空不能提交）"
+          />
+        </el-form-item>
+        <el-form-item label="负责人">
+          <el-input v-model="reviewer" placeholder="复测确认负责人姓名" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="reviewDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitReview">确认复测处置</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 

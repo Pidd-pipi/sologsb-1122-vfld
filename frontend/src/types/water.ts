@@ -39,3 +39,32 @@ export function isSurge(point: WaterInflow, all: WaterInflow[]): boolean {
   if (prev.estimatedFlow <= 0) return false;
   return point.estimatedFlow / prev.estimatedFlow >= 2;
 }
+
+/** 突变点现场复测处置记录（一条涌水记录至多一条） */
+export interface SurgeReview {
+  id: string;
+  faceId: string;
+  /** 对应的涌水记录 id */
+  waterId: string;
+  /** 复测处置说明（必填，为空不能提交） */
+  note: string;
+  /** 确认负责人 */
+  reviewer: string;
+  confirmedAt: number;
+}
+
+export type SurgeReviewDraft = Pick<SurgeReview, 'faceId' | 'waterId' | 'note' | 'reviewer'>;
+
+/** 突变点汇总：系统识别数、已复测确认数、待复测数（始终按当前记录重算） */
+export interface SurgeSummary {
+  total: number;
+  confirmed: number;
+  pending: number;
+}
+
+export function surgeSummary(rows: WaterInflow[], reviews: Pick<SurgeReview, 'waterId'>[]): SurgeSummary {
+  const confirmedIds = new Set(reviews.map((r) => r.waterId));
+  const surges = rows.filter((p) => isSurge(p, rows));
+  const confirmed = surges.filter((p) => confirmedIds.has(p.id)).length;
+  return { total: surges.length, confirmed, pending: surges.length - confirmed };
+}

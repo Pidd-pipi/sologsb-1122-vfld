@@ -8,7 +8,8 @@ import { useGradeCalc } from '../hooks/useGradeCalc';
 import SketchCanvas from '../components/common/SketchCanvas.vue';
 import GradeTag from '../components/common/GradeTag.vue';
 import { attitudeText, formatChainage } from '../utils/geoMath';
-import { GRADE_SUPPORT } from '../types/grade';
+import { GRADE_SUPPORT, waterMeasure } from '../types/grade';
+import { isSurge } from '../types/water';
 
 const route = useRoute();
 const router = useRouter();
@@ -20,6 +21,9 @@ const faceId = computed(() => String(route.params.id ?? ''));
 const face = computed(() => faceStore.byId(faceId.value));
 const joints = computed(() => jointStore.byFace(faceId.value));
 const grades = computed(() => gradeStore.byFace(faceId.value));
+const waters = computed(() => gradeStore.watersByFace(faceId.value));
+const surges = computed(() => waters.value.filter((p) => isSurge(p, waters.value)));
+const surgeStats = computed(() => gradeStore.surgeStats(faceId.value));
 const latest = computed(() => grades.value[0]);
 const previousGrade = computed(() => grades.value[1]);
 
@@ -60,6 +64,9 @@ onMounted(async () => {
       <GradeTag v-if="latest" :grade="latest.grade" />
       <el-tag v-else type="info">未判定级别</el-tag>
       <el-tag type="info" effect="plain">节理 {{ joints.length }} 组</el-tag>
+      <el-tag :type="surgeStats.pending > 0 ? 'danger' : 'success'" effect="plain">
+        突变点 {{ surgeStats.total }} 处 · 待复测 {{ surgeStats.pending }} 处
+      </el-tag>
       <div class="spacer" />
       <el-button type="primary" @click="router.push(`/faces/${faceId}/joints`)">节理录入</el-button>
       <el-button @click="router.push(`/faces/${faceId}/water`)">涌水记录</el-button>
@@ -105,6 +112,49 @@ onMounted(async () => {
             <p class="muted">尚未判定级别，按当前参数实时试算：</p>
             <GradeTag :grade="result.grade" />
             <p class="support">{{ result.support }}</p>
+          </div>
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header>
+            <div class="card-head">
+              <strong>涌水突变点复测</strong>
+              <el-tag :type="surgeStats.pending > 0 ? 'danger' : 'success'" size="small">
+                待复测 {{ surgeStats.pending }} / 共 {{ surgeStats.total }} 处
+              </el-tag>
+            </div>
+          </template>
+          <el-table :data="surges" size="small" border>
+            <el-table-column label="里程" width="105">
+              <template #default="{ row }">{{ formatChainage(row.chainage) }}</template>
+            </el-table-column>
+            <el-table-column prop="position" label="部位" min-width="110" />
+            <el-table-column prop="estimatedFlow" label="L/min" width="75" />
+            <el-table-column label="建议措施" min-width="180">
+              <template #default="{ row }">{{ waterMeasure(row.estimatedFlow, row.type) }}</template>
+            </el-table-column>
+            <el-table-column label="复测状态" width="100">
+              <template #default="{ row }">
+                <el-tag v-if="gradeStore.reviewByWaterId(row.id)" type="success" size="small">已确认</el-tag>
+                <el-tag v-else type="danger" size="small">待复测</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="处置说明" min-width="170">
+              <template #default="{ row }">
+                <template v-if="gradeStore.reviewByWaterId(row.id)">
+                  <div>{{ gradeStore.reviewByWaterId(row.id)?.note }}</div>
+                  <div class="muted">
+                    {{ gradeStore.reviewByWaterId(row.id)?.reviewer || '未填负责人' }} ·
+                    {{ new Date(gradeStore.reviewByWaterId(row.id)?.confirmedAt ?? 0).toLocaleDateString('zh-CN') }}
+                  </div>
+                </template>
+                <span v-else class="muted">现场复测后在涌水页确认</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-if="surges.length === 0" description="未检出突变点" :image-size="60" />
+          <div style="margin-top: 8px; text-align: right">
+            <el-button size="small" @click="router.push(`/faces/${faceId}/water`)">前往涌水页复测确认</el-button>
           </div>
         </el-card>
 

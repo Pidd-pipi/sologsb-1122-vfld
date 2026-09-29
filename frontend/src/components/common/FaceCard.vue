@@ -9,6 +9,8 @@ defineProps<{
   grade?: RockGrade;
   jointCount?: number;
   waterCount?: number;
+  /** 待复测突变点数 */
+  surgePending?: number;
   footer?: string;
 }>();
 
@@ -34,6 +36,10 @@ const emit = defineEmits<{
       {{ face.faceSize }} m
     </div>
     <div class="line">节理组 {{ jointCount ?? 0 }} 组 · 涌水记录 {{ waterCount ?? 0 }} 条 · 地质员 {{ face.geologist }}</div>
+    <div class="line">
+      <el-tag v-if="surgePending" size="small" type="danger" effect="dark">待复测突变点 {{ surgePending }} 处</el-tag>
+      <el-tag v-else size="small" type="success" effect="plain">突变点无待办</el-tag>
+    </div>
     <div class="line muted">最近编录 {{ new Date(face.recordedAt).toLocaleString('zh-CN') }}</div>
     <div v-if="footer" class="line footer">{{ footer }}</div>
   </el-card>

@@ -169,6 +169,7 @@ onMounted(async () => {
         :grade="row.grade"
         :joint-count="jointStore.byFace(row.face.id).length"
         :water-count="gradeStore.watersByFace(row.face.id).length"
+        :surge-pending="gradeStore.surgeStats(row.face.id).pending"
         :footer="`编录时间 ${new Date(row.lastRecordedAt).toLocaleString('zh-CN')}`"
         @open="(id) => router.push(`/faces/${id}`)"
       />
