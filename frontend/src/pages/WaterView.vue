@@ -4,7 +4,18 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useFaceStore } from '../stores/faceStore';
 import { useGradeStore } from '../stores/gradeStore';
-import { CHANGE_TRENDS, INFLOW_TYPES, isSurge, type ChangeTrend, type InflowType, type WaterInflow, type WaterInflowDraft } from '../types/water';
+import {
+  CHANGE_TRENDS,
+  INFLOW_TYPES,
+  currentWaterSurges,
+  getWaterSurgeStatus,
+  getWaterSurgeSummary,
+  isSurge,
+  type ChangeTrend,
+  type InflowType,
+  type WaterInflow,
+  type WaterInflowDraft,
+} from '../types/water';
 import { waterMeasure } from '../types/grade';
 import { formatChainage, parseChainage } from '../utils/geoMath';
 
@@ -30,6 +41,14 @@ const form = reactive<WaterInflowDraft>({
   chainage: 0,
 });
 
+const retestDialogVisible = ref(false);
+const retestError = ref('');
+const activeRetestWater = ref<WaterInflow | null>(null);
+const retestForm = reactive({
+  personInCharge: '',
+  note: '',
+});
+
 const W = 620;
 const H = 220;
 const PAD = 40;
@@ -37,7 +56,7 @@ const PAD = 40;
 interface WaterChart {
   path: string;
   area: string;
-  dots: { x: number; y: number; surge: boolean; label: string }[];
+  dots: { x: number; y: number; surge: boolean; handled: boolean; label: string }[];
   max: number;
   W: number;
   H: number;
@@ -62,6 +81,7 @@ const chart = computed<WaterChart>(() => {
     x: x(p.chainage),
     y: y(p.estimatedFlow),
     surge: isSurge(p, points),
+    handled: isSurge(p, points) && Boolean(p.retest),
     label: `${formatChainage(p.chainage)} ${p.type} ${p.estimatedFlow} L/min`,
   }));
   return { path, area, dots, max, W, H, PAD };
@@ -72,8 +92,15 @@ function onChainageText(value: string): void {
   form.chainage = parseChainage(value);
 }
 
-const surges = computed(() => rows.value.filter((p) => isSurge(p, rows.value)));
+const surges = computed(() => currentWaterSurges(rows.value));
+const summary = computed(() => getWaterSurgeSummary(rows.value));
 const totalFlow = computed(() => rows.value.reduce((s, p) => s + p.estimatedFlow, 0));
+
+const retestReadonly = computed(() => Boolean(activeRetestWater.value?.retest));
+const retestConfirmedAt = computed(() => activeRetestWater.value?.retest?.confirmedAt);
+const retestDialogTitle = computed(() =>
+  retestReadonly.value ? '查看复测处置' : '突变点现场复测处置',
+);
 
 async function submit() {
   error.value = '';
@@ -94,6 +121,38 @@ async function submit() {
   form.position = '';
 }
 
+function openRetestDialog(row: WaterInflow): void {
+  activeRetestWater.value = row;
+  retestError.value = '';
+  retestForm.personInCharge = row.retest?.personInCharge ?? face.value?.geologist ?? '';
+  retestForm.note = row.retest?.note ?? '';
+  retestDialogVisible.value = true;
+}
+
+async function submitRetest(): Promise<void> {
+  if (!activeRetestWater.value) return;
+  retestError.value = '';
+  const personInCharge = retestForm.personInCharge.trim();
+  const note = retestForm.note.trim();
+  if (!personInCharge) {
+    retestError.value = '请填写复测确认负责人';
+    return;
+  }
+  if (!note) {
+    retestError.value = '请填写复测处置说明，说明为空不能提交';
+    return;
+  }
+
+  const current = activeRetestWater.value;
+  await gradeStore.confirmWaterRetest(current.id, {
+    personInCharge,
+    note,
+    confirmedAt: current.retest?.confirmedAt ?? Date.now(),
+  });
+  ElMessage.success('复测处置已确认');
+  retestDialogVisible.value = false;
+}
+
 onMounted(async () => {
   await faceStore.load();
   await gradeStore.load();
@@ -109,7 +168,9 @@ onMounted(async () => {
     <div class="header">
       <h2>涌水记录与趋势 · {{ face?.faceNo ?? '未知' }}</h2>
       <el-tag type="info" effect="plain">记录 {{ rows.length }} 条</el-tag>
-      <el-tag type="warning">突变点 {{ surges.length }} 处</el-tag>
+      <el-tag type="warning">当前突变 {{ summary.total }} 处</el-tag>
+      <el-tag type="danger">待复测 {{ summary.pending }} 处</el-tag>
+      <el-tag type="success">已处置 {{ summary.handled }} 处</el-tag>
       <div class="spacer" />
       <el-button @click="router.push(`/faces/${faceId}`)">返回掌子面详情</el-button>
       <el-button @click="router.push(`/faces/${faceId}/joints`)">节理录入</el-button>
@@ -177,6 +238,10 @@ onMounted(async () => {
             <path :d="chart.path" fill="none" stroke="#1f4f8a" stroke-width="2.5" />
             <g v-for="(d, i) in chart.dots" :key="i">
               <circle :cx="d.x" :cy="d.y" :r="d.surge ? 6 : 4" :fill="d.surge ? '#d3542f' : '#1f4f8a'" />
+              <g v-if="d.handled" class="handled-badge">
+                <circle :cx="d.x + 6" :cy="d.y - 6" r="5" fill="#2f8f5b" stroke="#ffffff" stroke-width="1.2" />
+                <text :x="d.x + 6" :y="d.y - 5.7" font-size="8" fill="#ffffff" text-anchor="middle">✓</text>
+              </g>
               <text :x="d.x + 8" :y="d.y - 6" font-size="10" :fill="d.surge ? '#d3542f' : '#5b6470'">{{ d.label }}</text>
             </g>
             <text :x="chart.PAD" :y="16" font-size="11" fill="#7b8592">涌水量 L/min ↑</text>
@@ -188,16 +253,57 @@ onMounted(async () => {
         </el-card>
 
         <el-card shadow="never">
-          <template #header><strong>突变点与建议措施</strong></template>
+          <template #header>
+            <div class="card-head">
+              <strong>突变点、复测处置与建议措施</strong>
+              <el-tag type="danger" size="small">待复测 {{ summary.pending }} 处</el-tag>
+              <el-tag type="success" size="small">已处置 {{ summary.handled }} 处</el-tag>
+            </div>
+          </template>
+          <el-alert
+            title="系统仍按既有规则识别突变；确认复测后保留趋势和建议，仅从待复测数量中扣减。"
+            type="info"
+            :closable="false"
+            style="margin-bottom: 10px"
+          />
           <el-table :data="surges" size="small" border>
             <el-table-column label="里程" width="120">
               <template #default="{ row }">{{ formatChainage(row.chainage) }}</template>
             </el-table-column>
-            <el-table-column prop="position" label="部位" min-width="140" />
-            <el-table-column prop="type" label="类型" width="90" />
-            <el-table-column prop="estimatedFlow" label="涌水量" width="100" />
-            <el-table-column label="建议措施" min-width="260">
+            <el-table-column prop="position" label="部位" min-width="130" />
+            <el-table-column prop="type" label="类型" width="80" />
+            <el-table-column prop="estimatedFlow" label="涌水量" width="80" />
+            <el-table-column prop="changeTrend" label="趋势" width="80" />
+            <el-table-column label="建议措施" min-width="230">
               <template #default="{ row }">{{ waterMeasure(row.estimatedFlow, row.type) }}</template>
+            </el-table-column>
+            <el-table-column label="复测状态" width="110">
+              <template #default="{ row }">
+                <el-tag v-if="row.retest" type="success" size="small">已复测处置</el-tag>
+                <el-tag v-else type="danger" size="small">待复测</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="复测说明" min-width="160">
+              <template #default="{ row }">
+                <span v-if="row.retest" class="retest-note">{{ row.retest.note }}</span>
+                <span v-else class="muted">待现场确认</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="负责人 / 时间" min-width="150">
+              <template #default="{ row }">
+                <div v-if="row.retest" class="retest-meta">
+                  <span>{{ row.retest.personInCharge }}</span>
+                  <span class="muted">{{ new Date(row.retest.confirmedAt).toLocaleString('zh-CN') }}</span>
+                </div>
+                <span v-else class="muted">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="105" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" :type="row.retest ? 'default' : 'primary'" @click="openRetestDialog(row)">
+                  {{ row.retest ? '查看' : '复测处置' }}
+                </el-button>
+              </template>
             </el-table-column>
           </el-table>
           <el-empty v-if="surges.length === 0" description="未检出突变点" :image-size="60" />
@@ -215,6 +321,13 @@ onMounted(async () => {
             <el-table-column prop="waterTemp" label="水温" width="80" />
             <el-table-column prop="waterPressure" label="水压" width="80" />
             <el-table-column prop="changeTrend" label="趋势" width="90" />
+            <el-table-column label="异常状态" width="110">
+              <template #default="{ row }">
+                <el-tag v-if="getWaterSurgeStatus(row, rows) === 'pending'" type="danger" size="small">待复测</el-tag>
+                <el-tag v-else-if="getWaterSurgeStatus(row, rows) === 'handled'" type="success" size="small">已处置</el-tag>
+                <span v-else class="muted">—</span>
+              </template>
+            </el-table-column>
             <el-table-column label="操作" width="90">
               <template #default="{ row }">
                 <el-button size="small" danger @click="gradeStore.removeWater(row.id)">删除</el-button>
@@ -224,6 +337,46 @@ onMounted(async () => {
         </el-card>
       </div>
     </div>
+
+    <el-dialog v-model="retestDialogVisible" :title="retestDialogTitle" width="560px">
+      <el-alert v-if="retestError" :title="retestError" type="error" :closable="false" style="margin-bottom: 12px" />
+      <el-descriptions v-if="activeRetestWater" :column="1" border size="small" style="margin-bottom: 14px">
+        <el-descriptions-item label="异常位置">
+          {{ formatChainage(activeRetestWater.chainage) }} · {{ activeRetestWater.position }}
+        </el-descriptions-item>
+        <el-descriptions-item label="趋势 / 涌水量">
+          {{ activeRetestWater.changeTrend }} / {{ activeRetestWater.estimatedFlow }} L/min
+        </el-descriptions-item>
+        <el-descriptions-item label="建议措施">
+          {{ waterMeasure(activeRetestWater.estimatedFlow, activeRetestWater.type) }}
+        </el-descriptions-item>
+      </el-descriptions>
+      <el-form :model="retestForm" label-width="120px">
+        <el-form-item label="负责人" required>
+          <el-input
+            v-model="retestForm.personInCharge"
+            :disabled="retestReadonly"
+            placeholder="现场复测确认负责人"
+          />
+        </el-form-item>
+        <el-form-item label="复测处置说明" required>
+          <el-input
+            v-model="retestForm.note"
+            type="textarea"
+            :rows="4"
+            :disabled="retestReadonly"
+            placeholder="请填写现场复测情况和处置措施"
+          />
+        </el-form-item>
+        <el-form-item v-if="retestConfirmedAt" label="确认时间">
+          <span class="muted">{{ new Date(retestConfirmedAt).toLocaleString('zh-CN') }}</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="retestDialogVisible = false">{{ retestReadonly ? '关闭' : '取消' }}</el-button>
+        <el-button v-if="!retestReadonly" type="primary" @click="submitRetest">确认提交</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -271,5 +424,19 @@ onMounted(async () => {
 .muted {
   color: #7b8592;
   font-size: 13px;
+}
+.retest-note {
+  color: #2f3a46;
+}
+.retest-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: #2f3a46;
+}
+.handled-badge text {
+  dominant-baseline: central;
+  font-weight: 700;
 }
 </style>

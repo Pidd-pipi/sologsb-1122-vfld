@@ -9,6 +9,7 @@ import SketchCanvas from '../components/common/SketchCanvas.vue';
 import GradeTag from '../components/common/GradeTag.vue';
 import { attitudeText, formatChainage } from '../utils/geoMath';
 import { GRADE_SUPPORT } from '../types/grade';
+import { currentWaterSurges, getWaterSurgeSummary } from '../types/water';
 
 const route = useRoute();
 const router = useRouter();
@@ -20,6 +21,9 @@ const faceId = computed(() => String(route.params.id ?? ''));
 const face = computed(() => faceStore.byId(faceId.value));
 const joints = computed(() => jointStore.byFace(faceId.value));
 const grades = computed(() => gradeStore.byFace(faceId.value));
+const waters = computed(() => gradeStore.watersByFace(faceId.value));
+const waterSurges = computed(() => currentWaterSurges(waters.value));
+const waterSummary = computed(() => getWaterSurgeSummary(waters.value));
 const latest = computed(() => grades.value[0]);
 const previousGrade = computed(() => grades.value[1]);
 
@@ -60,6 +64,11 @@ onMounted(async () => {
       <GradeTag v-if="latest" :grade="latest.grade" />
       <el-tag v-else type="info">未判定级别</el-tag>
       <el-tag type="info" effect="plain">节理 {{ joints.length }} 组</el-tag>
+      <el-tag v-if="waterSummary.pending > 0" type="danger">
+        涌水待复测 {{ waterSummary.pending }} 处<template v-if="waterSummary.handled > 0"> · 已处置 {{ waterSummary.handled }} 处</template>
+      </el-tag>
+      <el-tag v-else-if="waterSummary.handled > 0" type="success">涌水突变已处置 {{ waterSummary.handled }} 处</el-tag>
+      <el-tag v-else type="info" effect="plain">无待复测涌水异常</el-tag>
       <div class="spacer" />
       <el-button type="primary" @click="router.push(`/faces/${faceId}/joints`)">节理录入</el-button>
       <el-button @click="router.push(`/faces/${faceId}/water`)">涌水记录</el-button>
@@ -105,6 +114,43 @@ onMounted(async () => {
             <p class="muted">尚未判定级别，按当前参数实时试算：</p>
             <GradeTag :grade="result.grade" />
             <p class="support">{{ result.support }}</p>
+          </div>
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header>
+            <div class="card-head">
+              <strong>涌水复测状态</strong>
+              <el-tag type="warning" size="small">当前突变 {{ waterSummary.total }} 处</el-tag>
+              <el-tag type="danger" size="small">待复测 {{ waterSummary.pending }} 处</el-tag>
+              <el-tag type="success" size="small">已处置 {{ waterSummary.handled }} 处</el-tag>
+            </div>
+          </template>
+          <el-table :data="waterSurges" size="small" border>
+            <el-table-column label="里程" width="110">
+              <template #default="{ row }">{{ formatChainage(row.chainage) }}</template>
+            </el-table-column>
+            <el-table-column prop="position" label="部位" min-width="130" />
+            <el-table-column prop="changeTrend" label="趋势" width="80" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag v-if="row.retest" type="success" size="small">已处置</el-tag>
+                <el-tag v-else type="danger" size="small">待复测</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="复测说明 / 负责人" min-width="190">
+              <template #default="{ row }">
+                <div v-if="row.retest" class="retest-meta">
+                  <span>{{ row.retest.note }}</span>
+                  <span class="muted">{{ row.retest.personInCharge }}</span>
+                </div>
+                <span v-else class="muted">待现场确认</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-if="waterSurges.length === 0" description="未检出涌水突变点" :image-size="60" />
+          <div class="card-actions">
+            <el-button size="small" @click="router.push(`/faces/${faceId}/water`)">进入涌水页处理</el-button>
           </div>
         </el-card>
 
@@ -182,9 +228,21 @@ onMounted(async () => {
   gap: 10px;
   flex-wrap: wrap;
 }
+.card-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+}
 .muted {
   color: #7b8592;
   font-size: 13px;
+}
+.retest-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: #2f3a46;
 }
 .support {
   margin: 8px 0;

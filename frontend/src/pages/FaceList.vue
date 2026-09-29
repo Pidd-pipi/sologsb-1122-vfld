@@ -17,6 +17,7 @@ import {
   type Weathering,
 } from '../types/face';
 import { ROCK_GRADES, type RockGrade } from '../types/grade';
+import type { WaterSurgeSummary } from '../types/water';
 import { formatChainage } from '../utils/geoMath';
 
 const router = useRouter();
@@ -42,6 +43,17 @@ const form = reactive<TunnelFaceDraft>({
 });
 
 const maxGradeCount = computed(() => Math.max(1, ...gradeDistribution.value.map((g) => g.count)));
+const waterSummaryMap = computed(() => {
+  const map = new Map<string, WaterSurgeSummary>();
+  for (const item of result.value) {
+    map.set(item.face.id, gradeStore.waterSurgeSummary(item.face.id));
+  }
+  return map;
+});
+
+function waterSummaryFor(id: string) {
+  return waterSummaryMap.value.get(id) ?? { total: 0, pending: 0, handled: 0 };
+}
 
 function openDialog() {
   dialogVisible.value = true;
@@ -169,6 +181,8 @@ onMounted(async () => {
         :grade="row.grade"
         :joint-count="jointStore.byFace(row.face.id).length"
         :water-count="gradeStore.watersByFace(row.face.id).length"
+        :pending-water-surge-count="waterSummaryFor(row.face.id).pending"
+        :handled-water-surge-count="waterSummaryFor(row.face.id).handled"
         :footer="`编录时间 ${new Date(row.lastRecordedAt).toLocaleString('zh-CN')}`"
         @open="(id) => router.push(`/faces/${id}`)"
       />

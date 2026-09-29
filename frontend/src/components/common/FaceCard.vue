@@ -9,6 +9,8 @@ defineProps<{
   grade?: RockGrade;
   jointCount?: number;
   waterCount?: number;
+  pendingWaterSurgeCount?: number;
+  handledWaterSurgeCount?: number;
   footer?: string;
 }>();
 
@@ -34,6 +36,15 @@ const emit = defineEmits<{
       {{ face.faceSize }} m
     </div>
     <div class="line">节理组 {{ jointCount ?? 0 }} 组 · 涌水记录 {{ waterCount ?? 0 }} 条 · 地质员 {{ face.geologist }}</div>
+    <div class="line water-status">
+      <el-tag v-if="(pendingWaterSurgeCount ?? 0) > 0" type="danger" size="small">
+        涌水待复测 {{ pendingWaterSurgeCount }} 处<span v-if="(handledWaterSurgeCount ?? 0) > 0"> · 已处置 {{ handledWaterSurgeCount }} 处</span>
+      </el-tag>
+      <el-tag v-else-if="(handledWaterSurgeCount ?? 0) > 0" type="success" size="small">
+        涌水突变已处置 {{ handledWaterSurgeCount }} 处
+      </el-tag>
+      <el-tag v-else type="info" size="small" effect="plain">无待复测涌水异常</el-tag>
+    </div>
     <div class="line muted">最近编录 {{ new Date(face.recordedAt).toLocaleString('zh-CN') }}</div>
     <div v-if="footer" class="line footer">{{ footer }}</div>
   </el-card>
@@ -54,6 +65,9 @@ const emit = defineEmits<{
   font-size: 13px;
   color: #5b6470;
   line-height: 1.7;
+}
+.water-status {
+  margin-top: 4px;
 }
 .muted {
   color: #97a0ad;
